@@ -6238,6 +6238,9 @@ mg_ev_handler( struct ns_connection* nc, int ev, void* p )
           if( conn->ns_conn->flags & MG_HEADERS_SENT )
             write_terminating_chunk( conn );
           close_local_endpoint( conn );
+          /* MG_POLL callback returned MG_TRUE, i.e. data is sent,
+           * set corresponding flag */
+          conn->ns_conn->flags |= NSF_FINISHED_SENDING_DATA;
         }
 
         if( conn->endpoint_type == EP_FILE )
