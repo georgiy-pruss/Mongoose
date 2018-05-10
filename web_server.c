@@ -1,6 +1,6 @@
 // Copyright (c) 2004-2013 Sergey Lyubka
 // Copyright (c) 2013-2014 Cesanta Software Limited
-// Modified by G.Pruss (c) 2015
+// Modified by G.Pruss (c) 2015, 2018
 
 #undef UNICODE                    // Use ANSI WinAPI functions
 #undef _UNICODE                   // Use multibyte encoding on Windows
@@ -145,8 +145,9 @@ show_usage_and_exit( void )
   char out[2000];
   const char** names;
   int i, n;
-  n = sprintf( out, "Mongoose version %s (c) Sergey Lyubka\n", MONGOOSE_VERSION );
-  n += sprintf( out+n, "Modified by G.Pruss (c) 2015.  Built on %s\n\n", __DATE__ );
+  n = sprintf( out, "Mongoose version 5.6 (c) Sergey Lyubka\n" );
+  n += sprintf( out+n, "V.%s - Modified by G.Pruss (c) 2015, 2018.", MONGOOSE_VERSION );
+  n += sprintf( out+n, " Built on %s\n\n", __DATE__ );
   n += sprintf( out+n, "Features: %s\n\n", mg_features );
   n += sprintf( out+n, "Usage:\n" );
 #if !defined(MONGOOSE_NO_AUTH) && !defined(MONGOOSE_NO_FILESYSTEM)
@@ -470,7 +471,6 @@ set_options( struct mg_server* server, char* argv[] )
   // Make sure we have absolute paths for files and directories
   // https://github.com/valenok/mongoose/issues/181
   set_absolute_path( options, "document_root" );
-  set_absolute_path( options, "dav_auth_file" );
   set_absolute_path( options, "cgi_interpreter" );
   // would be good also for   "cgi_interpreters"
   set_absolute_path( options, "access_log_file" );
@@ -574,4 +574,4 @@ WinMain( HINSTANCE hInst, HINSTANCE hPrevInst, LPTSTR lpCmdLine, int nCmdShow )
   return EXIT_SUCCESS;
 }
 
-// EOF 
+// EOF

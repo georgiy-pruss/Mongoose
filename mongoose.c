@@ -1528,8 +1528,7 @@ typedef HANDLE process_id_t;
 
 #else                    ////////////// UNIX specific defines and includes
 
-#if !defined(MONGOOSE_NO_FILESYSTEM) && \
-  (!defined(MONGOOSE_NO_DAV) || !defined(MONGOOSE_NO_DIRECTORY_LISTING ) )
+#if !defined(MONGOOSE_NO_FILESYSTEM) && !defined(MONGOOSE_NO_DIRECTORY_LISTING)
 #include <dirent.h>
 #endif
 #if !defined(MONGOOSE_NO_FILESYSTEM) && !defined(MONGOOSE_NO_DL)
@@ -1582,7 +1581,6 @@ typedef pid_t process_id_t;
 #if !defined(MONGOOSE_NO_CGI)
 #define MONGOOSE_NO_CGI
 #endif
-#define MONGOOSE_NO_DAV
 #define MONGOOSE_NO_DIRECTORY_LISTING
 #define MONGOOSE_NO_LOGGING
 #define MONGOOSE_NO_SSI
@@ -1595,7 +1593,7 @@ struct vec
   size_t len;
 };
 
-// For directory listing and WevDAV support
+// For directory listing
 struct dir_entry
 {
   struct connection* conn;
@@ -1617,8 +1615,6 @@ enum
   CGI_INTERPRETERS,
   CGI_PATTERN,
 #endif
-  DAV_AUTH_FILE,
-  DAV_ROOT,
   DOCUMENT_ROOT,
 #ifndef MONGOOSE_NO_DIRECTORY_LISTING
   ENABLE_DIRECTORY_LISTING,
@@ -1658,8 +1654,6 @@ static const char* static_config_options[] = {
   "cgi_interpreters", NULL,
   "cgi_pattern", DEFAULT_CGI_PATTERN,
 #endif
-  "dav_auth_file", NULL,
-  "dav_root", NULL,
   "document_root",  NULL,
 #ifndef MONGOOSE_NO_DIRECTORY_LISTING
   "enable_directory_listing", "yes",
@@ -3034,13 +3028,6 @@ mg_template( struct mg_connection* conn, const char* s,
 }
 
 #ifndef MONGOOSE_NO_FILESYSTEM
-static int
-is_dav_request( const struct connection* conn )
-{
-  const char* s = conn->mg_conn.request_method;
-  return !strcmp( s, "PUT" ) || !strcmp( s, "DELETE" ) ||
-         !strcmp( s, "MKCOL" ) || !strcmp( s, "PROPFIND" );
-}
 
 static int
 must_hide_file( struct connection* conn, const char* path )
@@ -3064,10 +3051,6 @@ convert_uri_to_file_name( struct connection* conn, char* buf,
   struct vec a, b;
   const char* rewrites = conn->server->config_options[URL_REWRITES];
   const char* root =
-#ifndef MONGOOSE_NO_DAV
-      is_dav_request( conn ) && conn->server->config_options[DAV_ROOT] != NULL ?
-      conn->server->config_options[DAV_ROOT] :
-#endif
       conn->server->config_options[DOCUMENT_ROOT];
 #ifndef MONGOOSE_NO_CGI
   const char* cgi_pat = conn->server->config_options[CGI_PATTERN];
@@ -3954,7 +3937,7 @@ call_request_handler_if_data_is_buffered( struct connection* conn )
     open_local_endpoint( conn, 1 );
 }
 
-#if !defined(MONGOOSE_NO_DIRECTORY_LISTING) || !defined(MONGOOSE_NO_DAV)
+#if !defined(MONGOOSE_NO_DIRECTORY_LISTING)
 
 #ifdef _WIN32
 struct dirent
@@ -4136,7 +4119,7 @@ mg_url_encode( const char* src, size_t s_len, char* dst, size_t dst_len )
   dst[j] = '\0';
   return j;
 }
-#endif  // !NO_DIRECTORY_LISTING || !MONGOOSE_NO_DAV
+#endif  // !NO_DIRECTORY_LISTING
 
 #ifndef MONGOOSE_NO_DIRECTORY_LISTING
 
@@ -4242,250 +4225,12 @@ send_directory_listing( struct connection* conn, const char* dir )
 }
 #endif  // MONGOOSE_NO_DIRECTORY_LISTING
 
-#ifndef MONGOOSE_NO_DAV
-static void
-print_props( struct connection* conn, const char* uri,
-    file_stat_t* stp )
-{
-  char mtime[64];
-  time_t t = stp->st_mtime;  // store in local variable for NDK compile
-  gmt_time_string( mtime, sizeof(mtime), &t );
-  mg_printf( &conn->mg_conn,
-      "<d:response>"
-      "<d:href>%s</d:href>"
-      "<d:propstat>"
-      "<d:prop>"
-      "<d:resourcetype>%s</d:resourcetype>"
-      "<d:getcontentlength>%" INT64_FMT "</d:getcontentlength>"
-      "<d:getlastmodified>%s</d:getlastmodified>"
-      "</d:prop>"
-      "<d:status>HTTP/1.1 200 OK</d:status>"
-      "</d:propstat>"
-      "</d:response>\n",
-      uri, S_ISDIR( stp->st_mode ) ? "<d:collection/>" : "",
-      (int64_t)stp->st_size, mtime );
-}
-
-static void
-handle_propfind( struct connection* conn, const char* path,
-    file_stat_t* stp, int exists )
-{
-  static const char header[] = "HTTP/1.1 207 Multi-Status\r\n"
-      "Connection: close\r\n"
-      "Content-Type: text/xml; charset=utf-8\r\n\r\n"
-      "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-      "<d:multistatus xmlns:d='DAV:'>\n";
-  static const char footer[] = "</d:multistatus>";
-  const char* depth = mg_get_header( &conn->mg_conn, "Depth" );
-#ifdef MONGOOSE_NO_DIRECTORY_LISTING
-  const char* list_dir = "no";
-#else
-  const char* list_dir = conn->server->config_options[ENABLE_DIRECTORY_LISTING];
-#endif
-
-  conn->mg_conn.status_code = 207;
-
-  // Print properties for the requested resource itself
-  if( !exists )
-  {
-    conn->mg_conn.status_code = 404;
-    mg_printf( &conn->mg_conn, "%s", "HTTP/1.1 404 Not Found\r\n\r\n" );
-  }
-  else if( S_ISDIR( stp->st_mode ) && mg_strcasecmp( list_dir, "yes" ) != 0 )
-  {
-    conn->mg_conn.status_code = 403;
-    mg_printf( &conn->mg_conn, "%s",
-        "HTTP/1.1 403 Directory Listing Denied\r\n\r\n" );
-  }
-  else
-  {
-    ns_send( conn->ns_conn, header, sizeof(header) - 1 );
-    print_props( conn, conn->mg_conn.uri, stp );
-
-    if( S_ISDIR( stp->st_mode ) &&
-        (depth == NULL || strcmp( depth, "0" ) != 0) )
-    {
-      struct dir_entry* arr = NULL;
-      int i, num_entries = scan_directory( conn, path, &arr );
-
-      for( i = 0; i < num_entries; ++i )
-      {
-        char buf[MAX_PATH_SIZE * 3];
-        struct dir_entry* de = &arr[i];
-        mg_url_encode( de->file_name, strlen( de->file_name ), buf, sizeof(buf) );
-        print_props( conn, buf, &de->st );
-        NS_FREE( de->file_name );
-      }
-      NS_FREE( arr );
-    }
-    ns_send( conn->ns_conn, footer, sizeof(footer) - 1 );
-  }
-
-  close_local_endpoint( conn );
-}
-
-static void
-handle_mkcol( struct connection* conn, const char* path )
-{
-  int status_code = 500;
-
-  if( conn->mg_conn.content_len > 0 )
-    status_code = 415;
-  else if( !mkdir( path, 0755 ) )
-    status_code = 201;
-  else if( errno == EEXIST )
-    status_code = 405;
-  else if( errno == EACCES )
-    status_code = 403;
-  else if( errno == ENOENT )
-    status_code = 409;
-  send_http_error( conn, status_code, NULL );
-}
-
-static int
-remove_directory( const char* dir )
-{
-  char path[MAX_PATH_SIZE];
-  struct dirent* dp;
-  file_stat_t st;
-  DIR* dirp;
-
-  if( (dirp = opendir( dir )) == NULL ) return 0;
-
-  while( (dp = readdir( dirp )) != NULL )
-  {
-    if( !strcmp( dp->d_name, "." ) || !strcmp( dp->d_name, ".." ) ) continue;
-    mg_snprintf( path, sizeof(path), "%s%c%s", dir, '/', dp->d_name );
-    stat( path, &st );
-    if( S_ISDIR( st.st_mode ) )
-      remove_directory( path );
-    else
-      remove( path );
-  }
-  closedir( dirp );
-  rmdir( dir );
-
-  return 1;
-}
-
-static void
-handle_delete( struct connection* conn, const char* path )
-{
-  file_stat_t st;
-
-  if( stat( path, &st ) != 0 )
-  {
-    send_http_error( conn, 404, NULL );
-  }
-  else if( S_ISDIR( st.st_mode ) )
-  {
-    remove_directory( path );
-    send_http_error( conn, 204, NULL );
-  }
-  else if( remove( path ) == 0 )
-  {
-    send_http_error( conn, 204, NULL );
-  }
-  else
-  {
-    send_http_error( conn, 423, NULL );
-  }
-}
-
-// For a given PUT path, create all intermediate subdirectories
-// for given path. Return 0 if the path itself is a directory,
-// or -1 on error, 1 if OK.
-static int
-put_dir( const char* path )
-{
-  char buf[MAX_PATH_SIZE];
-  const char* s, * p;
-  file_stat_t st;
-
-  // Create intermediate directories if they do not exist
-  for( s = p = path + 1; (p = strchr( s, '/' )) != NULL; s = ++p )
-  {
-    if( p - path >= (int)sizeof(buf) ) return -1;  // Buffer overflow
-    memcpy( buf, path, p - path );
-    buf[p - path] = '\0';
-    if( stat( buf, &st ) != 0 && mkdir( buf, 0755 ) != 0 ) return -1;
-    if( p[1] == '\0' ) return 0;  // Path is a directory itself
-  }
-
-  return 1;
-}
-
-static void
-handle_put( struct connection* conn, const char* path )
-{
-  file_stat_t st;
-  const char* range;
-  const char* cl_hdr = mg_get_header( &conn->mg_conn, "Content-Length" );
-  int64_t r1, r2;
-  int rc;
-
-  conn->mg_conn.status_code = !stat( path, &st ) ? 200 : 201;
-  if( (rc = put_dir( path )) == 0 )
-  {
-    mg_printf( &conn->mg_conn, "HTTP/1.1 %d OK\r\n\r\n",
-        conn->mg_conn.status_code );
-    close_local_endpoint( conn );
-  }
-  else if( rc == -1 )
-  {
-    send_http_error( conn, 500, "put_dir: %s", strerror( errno ) );
-  }
-  else if( cl_hdr == NULL )
-  {
-    send_http_error( conn, 411, NULL );
-  }
-  else if( (conn->endpoint.fd =
-      open( path, O_RDWR | O_CREAT | O_TRUNC | O_BINARY, 0644) ) < 0 )
-  {
-    send_http_error( conn, 500, "open(%s): %s", path, strerror( errno ) );
-  }
-  else
-  {
-    DBG(( "PUT [%s] %lu", path, (unsigned long)conn->ns_conn->recv_iobuf.len ));
-    conn->endpoint_type = EP_PUT;
-    ns_set_close_on_exec( conn->endpoint.fd );
-    range = mg_get_header( &conn->mg_conn, "Content-Range" );
-    conn->cl = to64( cl_hdr );
-    r1 = r2 = 0;
-    if( range != NULL && parse_range_header( range, &r1, &r2 ) > 0 )
-    {
-      conn->mg_conn.status_code = 206;
-      lseek( conn->endpoint.fd, r1, SEEK_SET );
-      conn->cl = r2 > r1 ? r2 - r1 + 1 : conn->cl - r1;
-    }
-    mg_printf( &conn->mg_conn, "HTTP/1.1 %d OK\r\nContent-Length: 0\r\n\r\n",
-        conn->mg_conn.status_code );
-  }
-}
-
-static void
-forward_put_data( struct connection* conn )
-{
-  struct iobuf* io = &conn->ns_conn->recv_iobuf;
-  size_t k = (size_t)( conn->cl < (int64_t)io->len ? conn->cl : (int64_t)io->len );
-  size_t n = write( conn->endpoint.fd, io->buf, k );   // Write them!
-  if( n > 0 )
-  {
-    iobuf_remove( io, n );
-    conn->cl -= n;
-  }
-  if( conn->cl <= 0 )
-    close_local_endpoint( conn );
-}
-#endif // MONGOOSE_NO_DAV
-
 static void
 send_options( struct connection* conn )
 {
   conn->mg_conn.status_code = 200;
   mg_printf( &conn->mg_conn, "%s",
-      "HTTP/1.1 200 OK\r\nAllow: GET, POST, HEAD, CONNECT, PUT, "
-      "DELETE, OPTIONS, PROPFIND, MKCOL\r\nDAV: 1\r\n\r\n" );
+      "HTTP/1.1 200 OK\r\nAllow: GET, POST, HEAD, CONNECT, OPTIONS\r\n\r\n" );
   close_local_endpoint( conn );
 }
 
@@ -4869,27 +4614,6 @@ is_authorized( struct connection* conn, const char* path, int is_directory )
   return authorized;
 }
 
-static int
-is_authorized_for_dav( struct connection* conn )
-{
-  const char* auth_file = conn->server->config_options[DAV_AUTH_FILE];
-  const char* method = conn->mg_conn.request_method;
-  FILE* fp;
-  int authorized = MG_FALSE;
-
-  // If dav_auth_file is not set, allow non-authorized PROPFIND
-  if( method != NULL && !strcmp( method, "PROPFIND" ) && auth_file == NULL )
-  {
-    authorized = MG_TRUE;
-  }
-  else if( auth_file != NULL && (fp = fopen( auth_file, "r" )) != NULL )
-  {
-    authorized = mg_authorize_digest( &conn->mg_conn, fp );
-    fclose( fp );
-  }
-
-  return authorized;
-}
 #endif  // MONGOOSE_NO_AUTH
 
 static int
@@ -5337,6 +5061,7 @@ mg_send_file_internal( struct mg_connection* c, const char* file_name,
     send_http_error( conn, 404, NULL );
   }
 }
+
 void
 mg_send_file( struct mg_connection* c, const char* file_name,
     const char* extra_headers )
@@ -5425,34 +5150,10 @@ open_local_endpoint( struct connection* conn, int skip_user )
     send_http_error( conn, 404, NULL );
 #ifndef MONGOOSE_NO_AUTH
   }
-  else if( ( !is_dav_request( conn ) && !is_authorized( conn, path,
-      exists && S_ISDIR( st.st_mode ) ) ) ||
-      ( is_dav_request( conn ) && !is_authorized_for_dav( conn ) ) )
+  else if( !is_authorized( conn, path, exists && S_ISDIR( st.st_mode ) ) )
   {
     mg_send_digest_auth_request( &conn->mg_conn );
     close_local_endpoint( conn );
-#endif
-#ifndef MONGOOSE_NO_DAV
-  }
-  else if( must_hide_file( conn, path ) )
-  {
-    send_http_error( conn, 404, NULL );
-  }
-  else if( !strcmp( conn->mg_conn.request_method, "PROPFIND" ) )
-  {
-    handle_propfind( conn, path, &st, exists );
-  }
-  else if( !strcmp( conn->mg_conn.request_method, "MKCOL" ) )
-  {
-    handle_mkcol( conn, path );
-  }
-  else if( !strcmp( conn->mg_conn.request_method, "DELETE" ) )
-  {
-    handle_delete( conn, path );
-  }
-  else if( !strcmp( conn->mg_conn.request_method, "PUT" ) )
-  {
-    handle_put( conn, path );
 #endif
   }
   else
@@ -5574,7 +5275,6 @@ on_recv_data( struct connection* conn )
 #ifndef MONGOOSE_NO_CGI
   if( conn->endpoint_type == EP_CGI && conn->endpoint.nc != NULL )
     ns_forward( conn->ns_conn, conn->endpoint.nc );
-
 #endif
   if( conn->endpoint_type == EP_USER )
   {
@@ -5587,11 +5287,6 @@ on_recv_data( struct connection* conn )
       iobuf_remove( io, n );
     call_request_handler_if_data_is_buffered( conn );
   }
-#ifndef MONGOOSE_NO_DAV
-  if( conn->endpoint_type == EP_PUT && io->len > 0 )
-    forward_put_data( conn );
-
-#endif
 }
 
 static void
@@ -5730,7 +5425,6 @@ close_local_endpoint( struct connection* conn )
   if( c->status_code > 0 && conn->endpoint_type != EP_CLIENT &&
       c->status_code != 400 )
     log_access( conn, conn->server->config_options[ACCESS_LOG_FILE] );
-
 #endif
 
   // Gobble possible POST data sent to the URI handler
@@ -6067,7 +5761,6 @@ mg_set_option( struct mg_server* server, const char* name, const char* value )
       error_msg = "setgid() failed";
     else if( setuid( pw->pw_uid ) != 0 )
       error_msg = "setuid() failed";
-
 #endif
   }
 
@@ -6133,29 +5826,10 @@ mg_ev_handler( struct ns_connection* nc, int ev, void* p )
 {
   struct connection* conn = (struct connection*)nc->user_data;
 
-  // Send NS event to the handler. Note that call_user won't send an event
-  // if conn == NULL. Therefore, repeat this for NS_ACCEPT event as well.
-#ifdef MONGOOSE_SEND_NS_EVENTS
-  {
-    struct connection* conn = (struct connection*)nc->user_data;
-    void* param[2] = { nc, p };
-    if( conn != NULL ) conn->mg_conn.callback_param = param;
-    call_user( conn, (enum mg_event)ev );
-  }
-#endif
-
   switch( ev )
   {
     case NS_ACCEPT:
       on_accept( nc, (union socket_address*)p );
-#ifdef MONGOOSE_SEND_NS_EVENTS
-      {
-        struct connection* conn = (struct connection*)nc->user_data;
-        void* param[2] = { nc, p };
-        if( conn != NULL ) conn->mg_conn.callback_param = param;
-        call_user( conn, (enum mg_event)ev );
-      }
-#endif
       break;
 
     case NS_CONNECT:
@@ -6338,11 +6012,7 @@ const char mg_features[] =
 #else
   "+CGI "
 #endif
-#ifdef MONGOOSE_NO_DAV
   "-DAV "
-#else
-  "+DAV "
-#endif
 #ifdef MONGOOSE_NO_DIRECTORY_LISTING
   "-DL "
 #else
@@ -6389,4 +6059,4 @@ const char mg_features[] =
   "+WS";
 #endif
 
-// EOF 
+// EOF

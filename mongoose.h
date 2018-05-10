@@ -18,7 +18,8 @@
 #ifndef MONGOOSE_HEADER_INCLUDED
 #define MONGOOSE_HEADER_INCLUDED
 
-#define MONGOOSE_VERSION "5.6.9"
+#define MONGOOSE_VERSION "5.6.10"
+// 5.6.10 removed all DAV stuff; also a couple of useless calls
 // 5.6.9 with SERVER_FEATURES; better search for interpreter
 // 5.6.8 with cgi_interpreters .ex1 .ex2 >cmd1and2.exe .ex3 >cmd3.exe
 // 5.6.7 with shutdown_command /shutdown
@@ -34,14 +35,14 @@ extern "C" {
 // This structure contains information about HTTP request.
 struct mg_connection
 {
-  const char* request_method;  // "GET", "POST", etc
+  const char* request_method; // "GET", "POST", etc
   const char* uri;            // URL-decoded URI
   const char* http_version;   // E.g. "1.0", "1.1"
   const char* query_string;   // URL part after '?', not including '?', or NULL
 
   char remote_ip[48];         // Max IPv6 string length is 45 characters
   char local_ip[48];          // Local IP address
-  unsigned short remote_port;  // Client's port
+  unsigned short remote_port; // Client's port
   unsigned short local_port;  // Local port number
 
   int num_headers;            // Number of HTTP headers
@@ -162,4 +163,4 @@ void mg_template( struct mg_connection*, const char* text,
 }
 #endif  // __cplusplus
 
-#endif  // MONGOOSE_HEADER_INCLUDED 
+#endif  // MONGOOSE_HEADER_INCLUDED
