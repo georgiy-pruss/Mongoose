@@ -18,7 +18,8 @@
 #ifndef MONGOOSE_HEADER_INCLUDED
 #define MONGOOSE_HEADER_INCLUDED
 
-#define MONGOOSE_VERSION "5.6.10"
+#define MONGOOSE_VERSION "5.6.11"
+// 5.6.11 access to prohibited URIs leads to banning IP (in ACL)
 // 5.6.10 removed all DAV stuff; also a couple of useless calls
 // 5.6.9 with SERVER_FEATURES; better search for interpreter
 // 5.6.8 with cgi_interpreters .ex1 .ex2 >cmd1and2.exe .ex3 >cmd3.exe
@@ -57,6 +58,7 @@ struct mg_connection
 
   int is_websocket;           // Connection is a websocket connection
   int status_code;            // HTTP status code for HTTP error handler
+  int blocked;                // Remote ip is blocked after this connection
   int wsbits;                 // First byte of the websocket frame
   void* server_param;         // Parameter passed to mg_create_server()
   void* connection_param;     // Placeholder for connection-specific data

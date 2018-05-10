@@ -1784,6 +1784,19 @@ static const struct
   { NULL,  0, NULL }
 };
 
+// Attempt to access this URI leads to immediate ban of the remote IP - G-: 5.6.11
+static int
+is_prohibited_uri( const char* uri )
+{
+  if( strcmp( uri, "/phpmyadmin/index.php" ) == 0 ) return 1;
+  if( strcmp( uri, "/phpMyAdmin/index.php" ) == 0 ) return 2;
+  if( strcmp( uri, "/hndUnblock.cgi" ) == 0 ) return 3;
+  if( strcmp( uri, "/HNAP1/" ) == 0 ) return 4;
+  if( strcmp( uri, "/muieblackcat" ) == 0 ) return 5;
+  if( strcmp( uri, "/wls-wsat/CoordinatorPortType" ) == 0 ) return 6;
+  return 0;
+}
+
 int mg_shutdown = 0;  // can be tested outside
 
 #ifdef MONGOOSE_ENABLE_THREADS
@@ -2725,6 +2738,21 @@ mg_strdup( const char* str )
   return copy;
 }
 
+static char*
+mg_strdup3( const char* s1, const char* s2, const char* s3 )
+{
+  int s1_len = strlen(s1);
+  int s2_len = strlen(s2);
+  int s3_len = strlen(s3);
+  char* copy = (char*)NS_MALLOC( s1_len + s2_len + s3_len + 1 );
+  if( copy == NULL ) return NULL;
+  memcpy( copy, s1, s1_len );
+  memcpy( copy + s1_len, s2, s2_len );
+  memcpy( copy + s1_len + s2_len, s3, s3_len );
+  copy[s1_len + s2_len + s3_len] = '\0';
+  return copy;
+}
+
 static int
 isbyte( int n )
 {
@@ -2772,6 +2800,16 @@ check_acl( const char* acl, uint32_t remote_ip )
   }
 
   return allowed == '+';
+}
+
+// Add new "deny" entry to the acl (and replace that long acl string)
+// Note: It won't be saved anywhere outside after the server stops!
+static void
+add_ip_to_acl( char** acl_root, const char* ip_as_str )
+{
+  char* old_acl_list = *acl_root;
+  *acl_root = mg_strdup3( old_acl_list, ",-", ip_as_str );
+  NS_FREE( old_acl_list );
 }
 
 // Protect against directory disclosure attack by removing '..',
@@ -2859,6 +2897,7 @@ parse_http_message( char* buf, size_t len, struct mg_connection* ri )
   // set elsewhere: remote_ip, remote_port, server_param
   ri->request_method = ri->uri = ri->http_version = ri->query_string = NULL;
   ri->num_headers = ri->status_code = ri->is_websocket = ri->content_len = 0;
+  ri->blocked = 0;
 
   if( len < 1 ) return ~0;
 
@@ -5126,6 +5165,11 @@ open_local_endpoint( struct connection* conn, int skip_user )
     return;
   }
 
+  // G-: New feature in 5.6.11 -- block IPs accessing prohibited URIs
+  conn->mg_conn.blocked = is_prohibited_uri( conn->mg_conn.uri );
+  if( conn->mg_conn.blocked )
+    add_ip_to_acl( &conn->server->config_options[ACCESS_CONTROL_LIST], conn->mg_conn.remote_ip );
+
 #ifdef MONGOOSE_NO_FILESYSTEM
   send_http_error( conn, 404, NULL );
 #else
@@ -5363,7 +5407,7 @@ static void
 log_access( const struct connection* conn, const char* path )
 {
   FILE* fp;
-  char date[64], user[100];
+  char date[64], user[100], blocked[32];
   time_t now;
   const struct mg_connection* c = &conn->mg_conn;
 
@@ -5376,12 +5420,13 @@ log_access( const struct connection* conn, const char* path )
   flockfile( fp );
   mg_parse_header( mg_get_header( &conn->mg_conn, "Authorization" ), "username",
       user, sizeof(user) );
-  fprintf( fp, "%s - %s %s \"%s %s%s%s HTTP/%s\" %d 0",
+  if( c->blocked ) sprintf( blocked, " BLOCKED:%d", c->blocked ); else blocked[0] = '\0';
+  fprintf( fp, "%s - %s %s \"%s %s%s%s HTTP/%s\" %d%s",
       c->remote_ip, user[0] == '\0' ? "-" : user, date,
       c->request_method ? c->request_method : "-",
       c->uri ? c->uri : "-", c->query_string ? "?" : "",
       c->query_string ? c->query_string : "",
-      c->http_version, c->status_code );
+      c->http_version, c->status_code, blocked );
   log_header( c, "Referer", fp );
   // log_header( c, "User-Agent", fp ); // G-: no user-agent
   fputc( '\n', fp );
@@ -5444,6 +5489,7 @@ close_local_endpoint( struct connection* conn )
   // (IP addresses & ports, server_param) must survive. Nullify the rest.
   c->request_method = c->uri = c->http_version = c->query_string = NULL;
   c->num_headers = c->status_code = c->is_websocket = c->content_len = 0;
+  c->blocked = 0;
   c->connection_param = c->callback_param = NULL;
 
   if( keep_alive )
